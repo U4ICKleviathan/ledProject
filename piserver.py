@@ -1,16 +1,28 @@
-import new_led_actions as led_actions
+try:
+    import led_actions_pigpio as led_actions
+except ImportError:
+    print "This machine cannot access GPIO, therefore we will simulate GPIO actions"
+    import led_action_simulator as led_actions
 from BaseHTTPServer import BaseHTTPRequestHandler, HTTPServer
 import SocketServer
-import cgi
-import urlparse
+import json
+import logging
 from pprint import pprint
 
-
 PORT_NUMBER = 8080
+ACTION_KEY = "action"
+VARIABLES_KEY = "variables"
 
-# This class will handles any incoming request from
-# the browser
-class myHandler(BaseHTTPRequestHandler):
+server_log = logging.getLogger()
+
+
+# This class will handle any incoming request
+class PiServer(BaseHTTPRequestHandler):
+
+    def log_message(self, format, *args):
+        print '{0:s} - - [{1:s}] {2:s}\n'.format(self.client_address[0], self.log_date_time_string(), format % args)
+        return
+
     # Handler for the GET requests
     def do_GET(self):
         request_path = self.path
@@ -18,13 +30,13 @@ class myHandler(BaseHTTPRequestHandler):
         print("\n----- Request Start ----->\n")
         for index, value in enumerate(request_path):
             if value == "/":
-                command = request_path[index+1:]
+                command = request_path[index + 1:]
                 break
         print command
         if "brightness" in command:
             brightness_level = float(command[11:])
-	
-	led_actions.change_brightness(brightness_level)
+
+        led_actions.change_brightness(brightness_level)
         self.send_response(200)
         request_headers = self.headers
         content_length = request_headers.getheaders('content-length')
@@ -38,72 +50,82 @@ class myHandler(BaseHTTPRequestHandler):
         self.wfile.write("Server Is Online")
         return
 
-
     def do_POST(self):
-        command = "No Command Set"
-        request_path = self.path
         # Extract and print the contents of the POST
-        length = int(self.headers['Content-Length'])
-        post_data = urlparse.parse_qs(self .rfile.read(length).decode('utf-8'))
-        for key, value in post_data.iteritems():
-            print "%s=%s" % (key, str(value))
-            if 'command' in key:
-                command = str(value)
+        raw_data = self.rfile.read(int(self.headers['Content-Length']))
+        request_data = json.loads(raw_data)
+        print request_data
+        action = extract_action(request_data)
+        action_variables = extract_variables(request_data)
+        try:
+            action_dict[action](**action_variables)
+        except Exception:
+            print "something went wrong"
+            print Exception
 
-        if 'blink' in command:
-            print "BLINKING LED"
-            self.send_response(200)
-            self.end_headers()
-            led_actions.blink()
-
-        elif 'fade' in command:
-            print "FADING LED"
-            self.send_response(200)
-	    self.end_headers()
-	    led_actions.fade()
-        else:
-            print "COMMAND NOT RECOGNIZED"
-            self.send_response(403)
+        self.send_response(200)
         self.end_headers()
 
-        # self.wfile.write('Client: %s\n' % str(self.client_address))
-        # self.wfile.write('User-agent: %s\n' % str(self.headers['user-agent']))
-        # self.wfile.write('Path: %s\n' % self.path)
-        # self.wfile.write('Form data:\n')
-        #
-        # for field in form.keys():
-        #     field_item = form[field]
-        #     if field_item.filename:
-        #         # The field contains an uploaded file
-        #         file_data = field_item.file.read()
-        #         file_len = len(file_data)
-        #         del file_data
-        #         self.wfile.write('\tUploaded %s as "%s" (%d bytes)\n' % \
-        #                 (field, field_item.filename, file_len))
-        #     else:
-        #         # Regular form value
-        #         self.wfile.write('\t%s=%s\n' % (field, form[field].value))
-        return
+
+def extract_action(request_data):
+    try:
+        return request_data[ACTION_KEY]
+    except Exception:
+        print "No action set"
+        print str(Exception)
 
 
+def extract_variables(request_data):
+    try:
+        return request_data[VARIABLES_KEY]
+    except Exception:
+        print "No action set"
+        print str(Exception)
+
+
+def parse_path(request_path):
+    command = None
+    print("\n----- Request Start ----->\n")
+    for index, value in enumerate(request_path):
+        if value == "/" and request_path[index + 1] == "?":
+            command = request_path[index + 2:]
+            break
+    print command
+    if "brightness" in command:
+        brightness_level = command[11:]
+    print("<----- Request End -----\n")
+
+
+def change_brightness(**kwargs):
+    led_actions.change_brightness(**kwargs)
+    pass
+
+
+def change_color(**kwargs):
+    led_actions.change_color(**kwargs)
+    pass
+
+action_dict = {
+    "customColor": change_color,
+    "changeBrightness": change_brightness
+}
 
 def main():
+    server = None
     try:
         # Create a web server and define the handler to manage the
         # incoming request
-
-	SocketServer.TCPServer.allow_reuse_address = True
-        server = HTTPServer(('', PORT_NUMBER), myHandler)
-        print 'Started httpserver on port ', PORT_NUMBER
+        SocketServer.TCPServer.allow_reuse_address = True
+        server = HTTPServer(('', PORT_NUMBER), PiServer)
+        print 'Started http server on port ', PORT_NUMBER
         # Wait forever for incoming http requests
         server.serve_forever()
 
     except KeyboardInterrupt:
         print "shutting down the server"
         server.socket.close()
-	led_actions.kill_thread()
+        led_actions.kill_thread()
 
 
 if __name__ == "__main__":
     main()
-
